@@ -59,7 +59,7 @@ class DockerSandbox:
         network_allowed: bool = True,
         run_kwargs: dict[str, Any] | None = None,
         env: dict[str, str] | None = None,
-        shell: str = "bash -lc",
+        shell: str = "bash -c",  # non-login: a login shell can reset PATH (seen on alpine images)
         platform: str | None = None,
         agent_user: str | None = None,
         pull: bool = True,

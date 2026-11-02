@@ -22,6 +22,9 @@ class ExitCodeIgnored(Probe):
             return self.result(None, "task declares no expected tests")
         if self.adapter is None:
             return self.result(None, "no adapter")
+        if not task.metadata.get("grader_logic_known", True):
+            return self.result(None, "benchmark grader logic not integrated; a synthetic check would "
+                                     "measure etbh, not the benchmark")
         statuses = {n: "PASSED" for n in names}
         grade = self.adapter.grade_synthetic(task, statuses, 1, self.hardening)
         ev = ("non-zero exit code ignored: all-pass stdout graded as pass" if grade.passed

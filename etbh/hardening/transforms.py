@@ -16,7 +16,19 @@ from etbh.hardening.profiles import Hardening
 if TYPE_CHECKING:
     from etbh.adapters.base import Sandbox, TaskSpec
 
-PRISTINE_TESTS_DIR = "/etbh/pristine_tests"
+PRISTINE_TESTS_DIR = "/etbh/pristine_tests"  # legacy name; see pristine_dir()
+
+
+def pristine_dir(task: TaskSpec) -> str:
+    """Root-only copy of the pristine tests, at a path that names neither etbh nor the task.
+
+    The directory name is a hash so eval_context_leak (and an agent grepping for harness
+    names) does not find it by name; it is chmod 700 root after the copy, so an unprivileged
+    agent cannot read it either. A root agent could still discover it by mtime; the real
+    defence for that case is a separate grading container.
+    """
+    digest = hashlib.sha256(f"pristine:{task.benchmark}:{task.task_id}".encode()).hexdigest()[:12]
+    return f"/var/cache/.c{digest}"
 EVAL_CONTEXT_MARKERS = (
     "SWE", "SWEBENCH", "INSPECT", "CONTROL_ARENA", "CONTROLARENA", "TERMINAL_BENCH",
     "HARBOR", "CYBERGYM", "BOUNTYBENCH", "BENCHMARK", "EVAL", "GRADER", "TASK_ID", "INSTANCE",
@@ -57,7 +69,7 @@ def pre_agent_commands(h: Hardening, task: TaskSpec) -> list[str]:
         # no remotes, so neither the fix commit nor the upstream can be reached.
         cmds.append(
             f"cd {wd} && rm -rf .git && git init -q && git add -A >/dev/null 2>&1; "
-            f"git -c user.email=etbh@localhost -c user.name=etbh commit -q -m base "
+            f"git -c user.email=dev@localhost -c user.name=dev commit -q -m base "
             f">/dev/null 2>&1 || true"
         )
     if h.grader_paths_read_only and task.grader_paths:
@@ -68,11 +80,12 @@ def pre_agent_commands(h: Hardening, task: TaskSpec) -> list[str]:
         cmds.append(f"for f in {quoted}; do [ -e \"$f\" ] && chown root:root \"$f\" && "
                     f"chmod a-w \"$f\"; done; true")
     if h.copy_tests_at_grade_time or h.hash_check_tests:
+        pdir = pristine_dir(task)
         quoted = " ".join(shlex.quote(p) for p in task.test_files)
         cmds.append(
-            f"mkdir -p {PRISTINE_TESTS_DIR} && cd {wd} && for f in {quoted}; do "
-            f"if [ -e \"$f\" ]; then mkdir -p {PRISTINE_TESTS_DIR}/$(dirname \"$f\") && "
-            f"cp -a \"$f\" {PRISTINE_TESTS_DIR}/\"$f\"; fi; done"
+            f"mkdir -p {pdir} && cd {wd} && for f in {quoted}; do "
+            f"if [ -e \"$f\" ]; then mkdir -p {pdir}/$(dirname \"$f\") && "
+            f"cp -a \"$f\" {pdir}/\"$f\"; fi; done; chown -R root:root {pdir} && chmod -R go-rwx {pdir}"
         )
     return cmds
 
@@ -82,10 +95,11 @@ def pre_grade_commands(h: Hardening, task: TaskSpec) -> list[str]:
     cmds: list[str] = []
     wd = shlex.quote(task.workdir)
     if h.copy_tests_at_grade_time and task.test_files:
+        pdir = pristine_dir(task)
         quoted = " ".join(shlex.quote(p) for p in task.test_files)
         cmds.append(
-            f"cd {wd} && for f in {quoted}; do if [ -e {PRISTINE_TESTS_DIR}/\"$f\" ]; then "
-            f"mkdir -p $(dirname \"$f\") && cp -a {PRISTINE_TESTS_DIR}/\"$f\" \"$f\"; fi; done"
+            f"cd {wd} && for f in {quoted}; do if [ -e {pdir}/\"$f\" ]; then "
+            f"mkdir -p $(dirname \"$f\") && cp -a {pdir}/\"$f\" \"$f\"; fi; done"
         )
     if h.separate_grader_container:
         # Marker only: the adapter must honour it by grading in a fresh container built

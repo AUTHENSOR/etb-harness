@@ -75,8 +75,13 @@ def test_resolve_image_policies(monkeypatch):
     assert resolve_image(x86, "x86_64")[:2] == (x86, "linux/amd64")
     assert resolve_image(x86, "arm64")[:2] == (arm64_variant(x86), "linux/arm64")
     import etbh.adapters.swe_bench as m
+    monkeypatch.setattr(m, "image_local", lambda img: False)
     monkeypatch.setattr(m, "image_available", lambda img: True)
     assert resolve_image(x86, "auto")[:2] == (arm64_variant(x86), "linux/arm64")
+    # local-first: an x86_64 image already on disk wins over a registry arm64 build
+    monkeypatch.setattr(m, "image_local", lambda img: img == x86)
+    assert resolve_image(x86, "auto")[:2] == (x86, "linux/amd64")
+    monkeypatch.setattr(m, "image_local", lambda img: False)
     monkeypatch.setattr(m, "image_available", lambda img: False)
     assert resolve_image(x86, "auto")[:2] == (x86, "linux/amd64")
     monkeypatch.setattr(m, "image_available", lambda img: None)
@@ -101,6 +106,7 @@ def _row(**over):
 
 def _adapter(monkeypatch, row):
     import etbh.adapters.swe_bench as m
+    monkeypatch.setattr(m, "image_local", lambda img: False)
     monkeypatch.setattr(m, "image_available", lambda img: False)
     return SweBenchAdapter(rows={row["instance_id"]: row}, arch="auto")
 
@@ -167,3 +173,45 @@ def test_cli_accepts_adapter_options(monkeypatch, capsys):
     assert rc == 0
     pins = json.loads(capsys.readouterr().out)
     assert pins["dataset_revision"] == "deadbeef" and pins["arch_policy"] == "x86_64"
+
+
+def test_pro_rows_map_without_a_grader(monkeypatch):
+    row = {
+        "instance_id": "instance_Acme__thing-abc-vnan", "repo": "Acme/thing", "base_commit": "abc",
+        "patch": "diff --git a/src/a.py b/src/a.py\n",
+        "test_patch": "diff --git a/tests/test_a.py b/tests/test_a.py\n",
+        "fail_to_pass": json.dumps(["tests/test_a.py::test_x"]), "pass_to_pass": "[]",
+        "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_Acme__thing-abc-vnan",
+        "repo_language": "python", "version": "2.0.0",
+    }
+    import etbh.adapters.swe_bench as m
+    monkeypatch.setattr(m, "image_available", lambda img: True)
+    ad = SweBenchAdapter(variant="pro", rows={row["instance_id"]: row})
+    spec = ad.task_spec(row["instance_id"])
+    assert spec.image.startswith("ghcr.io/scaleapi/") and spec.metadata["platform"] is None
+    assert spec.fail_to_pass == ["tests/test_a.py::test_x"] and spec.test_files == ["tests/test_a.py"]
+    assert spec.grader_command == "" and spec.metadata["grader_logic_known"] is False
+    assert "UNVERIFIED" in spec.metadata["grader_source"]
+    # grading probes refuse to guess when the benchmark grader is not integrated
+    from etbh.probes import build_probes
+
+    probes = build_probes(ad, BEFORE,
+                          ["exit_code_ignored", "degenerate_pass", "test_edit_pass", "stdout_spoof_pass"])
+    results = {p.probe_id: p.run(spec, None) for p in probes}
+    assert all(r.open is None for r in results.values()), {k: v.evidence for k, v in results.items()}
+
+
+def test_synthetic_probes_under_after_profile(monkeypatch):
+    """The two grader-logic probes must run (not error) under `after` and come out closed."""
+    from etbh.probes import build_probes
+
+    ad = _adapter(monkeypatch, _row())
+    spec = ad.task_spec("matplotlib__matplotlib-1")
+    results = {p.probe_id: p.run(spec, None)
+               for p in build_probes(ad, AFTER, ["exit_code_ignored", "degenerate_pass"])}
+    assert results["exit_code_ignored"].open is False
+    assert results["degenerate_pass"].open is False, results["degenerate_pass"].evidence
+    assert "structural policy" in results["degenerate_pass"].evidence
+    before = {p.probe_id: p.run(spec, None)
+              for p in build_probes(ad, BEFORE, ["exit_code_ignored", "degenerate_pass"])}
+    assert before["exit_code_ignored"].open is True and before["degenerate_pass"].open is True

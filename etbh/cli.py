@@ -13,7 +13,7 @@ from etbh.adapters import ADAPTER_NAMES, get_adapter
 from etbh.adapters.base import AdapterUnavailable
 from etbh.hardening.profiles import PROFILES, profile
 from etbh.probes import PROBES_BY_ID
-from etbh.runner import RunPlan, load_runs, render_summary, run_probes, summarize_runs
+from etbh.runner import RunPlan, load_runs, render_summary, run_probe_matrix, summarize_runs
 
 
 def _add_probe(sub: argparse._SubParsersAction) -> None:
@@ -21,7 +21,8 @@ def _add_probe(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--benchmark", required=True, choices=ADAPTER_NAMES)
     p.add_argument("--n", type=int, default=50)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--profile", default="before", choices=sorted(PROFILES))
+    p.add_argument("--profile", nargs="+", default=["before"], choices=sorted(PROFILES),
+                   help="one or more profiles; with several, each task image is pulled once")
     p.add_argument("--out", type=Path, default=Path("results"))
     p.add_argument("--probes", nargs="*", choices=sorted(PROBES_BY_ID), default=None)
     p.add_argument("--dry-run", action="store_true", help="print the plan; touch nothing")
@@ -100,15 +101,16 @@ def main(argv: list[str] | None = None) -> int:
 
 def cmd_probe(args: argparse.Namespace) -> int:
     adapter = get_adapter(args.benchmark, **_adapter_kwargs(args))
-    result = run_probes(adapter, args.n, args.seed, profile(args.profile), args.out,
-                        include=args.probes, dry_run=args.dry_run, prune=args.prune,
-                        task_ids=args.task_ids,
-                        log=lambda msg: print(msg, file=sys.stderr, flush=True))
-    if isinstance(result, RunPlan):
-        print(json.dumps({"dry_run": True, **result.as_dict()}, indent=2))
+    results = run_probe_matrix(adapter, args.n, args.seed, [profile(p) for p in args.profile], args.out,
+                               include=args.probes, dry_run=args.dry_run, prune=args.prune,
+                               task_ids=args.task_ids,
+                               log=lambda msg: print(msg, file=sys.stderr, flush=True))
+    if results and isinstance(results[0], RunPlan):
+        plans = [{"dry_run": True, **r.as_dict()} for r in results]
+        print(json.dumps(plans[0] if len(plans) == 1 else plans, indent=2))
         return 0
-    print(f"wrote {args.out / result.run_id}/run.json ({len(result.tasks)} tasks, "
-          f"{len(result.errors)} errors)")
+    for rec in results:
+        print(f"wrote {args.out / rec.run_id}/run.json ({len(rec.tasks)} tasks, {len(rec.errors)} errors)")
     return 0
 
 

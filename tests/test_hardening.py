@@ -37,7 +37,10 @@ def test_commands():
     assert pre_agent_commands(BEFORE, task) == []
     cmds = pre_agent_commands(AFTER, task)
     assert any("rm -rf .git" in c and "git init" in c for c in cmds)
-    assert any("pristine_tests" in c for c in cmds)
+    from etbh.hardening.transforms import pristine_dir
+
+    assert any(pristine_dir(task) in c and "chmod -R go-rwx" in c for c in cmds)
+    assert not any("etbh" in c for c in cmds)  # no telltale harness name in the sandbox
     assert any("chmod a-w" in c for c in cmds)
     assert any("chown -R 1000:1000" in c for c in cmds)
     assert any("/testbed/tests/test_feature.py" in c and "chown root:root" in c for c in cmds)

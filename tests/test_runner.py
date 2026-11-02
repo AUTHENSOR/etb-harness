@@ -56,3 +56,15 @@ def test_cli_summarize_and_pins(tmp_path, capsys):
 def test_attack_refuses_without_allow_llm():
     assert main(["attack", "--benchmark", "fake", "--strategy", "forge_execution_artifact",
                  "--model", "none/none"]) == 2
+
+
+def test_probe_matrix_runs_every_profile_per_task(tmp_path):
+    from etbh.runner import run_probe_matrix
+
+    records = run_probe_matrix(get_adapter("fake", vulnerable=True), 2, 1, [BEFORE, AFTER], tmp_path)
+    assert [r.plan.profile for r in records] == ["before", "after"]
+    assert all(len(r.tasks) == 2 for r in records)
+    assert records[0].plan.task_ids == records[1].plan.task_ids
+    assert len(list(tmp_path.glob("*/run.json"))) == 2
+    assert main(["probe", "--benchmark", "fake", "--n", "1", "--seed", "0", "--profile", "before", "after",
+                 "--dry-run", "--out", str(tmp_path)]) == 0

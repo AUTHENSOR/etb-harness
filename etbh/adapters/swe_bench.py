@@ -84,16 +84,41 @@ def arm64_variant(image: str) -> str:
 
 
 @cache
+def image_local(image: str) -> bool:
+    """Is the image already in the local Docker store? (cheap; never pulls)"""
+    if shutil.which("docker") is None:
+        return False
+    try:
+        proc = subprocess.run(["docker", "image", "inspect", image], capture_output=True,
+                              text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+@cache
 def image_available(image: str) -> bool | None:
-    """Ask the registry whether an image exists. None when the docker CLI is unavailable."""
+    """Ask the registry whether an image exists. None when the docker CLI is unavailable or
+    the registry could not be reached (two attempts; manifest lookups stall while a large
+    pull is in flight)."""
     if shutil.which("docker") is None:
         return None
-    try:
-        proc = subprocess.run(["docker", "manifest", "inspect", image], capture_output=True,
-                              text=True, timeout=90, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return proc.returncode == 0
+    for attempt in range(2):
+        try:
+            proc = subprocess.run(["docker", "manifest", "inspect", image], capture_output=True,
+                                  text=True, timeout=150, check=False)
+        except OSError:
+            return None
+        except subprocess.TimeoutExpired:
+            continue
+        if proc.returncode == 0:
+            return True
+        err = proc.stderr.lower()
+        if "denied" in err or "not found" in err or "unauthorized" in err or "no such manifest" in err:
+            return False
+        if attempt == 0:
+            continue  # transient (network, rate limit): try once more
+    return None
 
 
 def resolve_image(x86_image: str, arch: str) -> tuple[str, str, str]:
@@ -105,6 +130,12 @@ def resolve_image(x86_image: str, arch: str) -> tuple[str, str, str]:
     arm = arm64_variant(x86_image)
     if arch == "arm64":
         return arm, "linux/arm64", "arm64 requested"
+    # Local first, so repeated runs (before, then after) reuse the image already on disk and
+    # both profiles measure the same image.
+    if image_local(arm):
+        return arm, "linux/arm64", "arm64 image already present locally"
+    if image_local(x86_image):
+        return x86_image, "linux/amd64", "x86_64 image already present locally"
     avail = image_available(arm)
     if avail:
         return arm, "linux/arm64", "arm64 image available in registry"
@@ -224,7 +255,8 @@ class SweBenchAdapter(AdapterBase):
 
     def version_pins(self) -> dict[str, str]:
         return {
-            "dataset": self.dataset_name,
+            "dataset": self.dataset_name + (" (config default, v2 rows with docker_image)"
+                                            if self.variant == "pro" else ""),
             "dataset_split": self.split,
             "dataset_revision": self.dataset_revision,
             "swebench": _installed("swebench"),
@@ -245,10 +277,18 @@ class SweBenchAdapter(AdapterBase):
         row = self._load()[task_id]
         test_patch = row.get("test_patch", "")
         test_files = files_in_patch(test_patch)
-        f2p = _as_list(row.get("FAIL_TO_PASS"))
-        p2p = _as_list(row.get("PASS_TO_PASS"))
-        x86_image = row.get("image") or image_name(task_id, "x86_64", self.namespace)
-        image, platform, image_note = resolve_image(x86_image, self.arch)
+        f2p = _as_list(row.get("FAIL_TO_PASS", row.get("fail_to_pass")))
+        p2p = _as_list(row.get("PASS_TO_PASS", row.get("pass_to_pass")))
+        if row.get("image"):
+            image, platform, image_note = resolve_image(row["image"], self.arch)
+        elif row.get("docker_image"):
+            # SWE-bench Pro images (ghcr.io/scaleapi/swe-bench_pro-v2:...). Architecture of the
+            # published manifests UNVERIFIED; let Docker choose and record that.
+            image, platform = row["docker_image"], None
+            image_note = "non-swebench image; platform left to Docker (UNVERIFIED)"
+        else:
+            image, platform, image_note = resolve_image(image_name(task_id, "x86_64", self.namespace),
+                                                        self.arch)
         before, after, spec, grader_source, runner = self._eval_scripts(row, test_files)
         return TaskSpec(
             benchmark=self.name,
@@ -268,6 +308,7 @@ class SweBenchAdapter(AdapterBase):
                 "reference_patch_files": files_in_patch(row.get("patch", "")),
                 "grader_source": grader_source,
                 "runner": runner,
+                "grader_logic_known": self.variant == "verified",
                 "junit_supported": runner == "pytest",
                 "log_parser": row.get("log_parser") or "legacy",
                 "platform": platform,
@@ -284,6 +325,11 @@ class SweBenchAdapter(AdapterBase):
 
     def _eval_scripts(self, row: dict, test_files: list[str]) -> tuple[str, str, Any, str, str]:
         """(before script, after script, swebench TestSpec or None, source, runner kind)."""
+        if self.variant == "pro":
+            # Scale's grading lives in per-instance run scripts (scaleapi/SWE-bench_Pro-os), not in
+            # the dataset; until they are integrated there is no grader to probe. Capability probes
+            # still run; grading probes report undetermined.
+            return "", "", None, "UNVERIFIED: SWE-bench Pro run scripts not integrated; no grader", "unknown"
         if row.get("eval_script"):
             try:
                 from swebench.harness.utils import make_test_spec  # swebench >= 5
@@ -408,13 +454,12 @@ class SweBenchAdapter(AdapterBase):
                             statuses=statuses)
         passed = outcome.passed
         if policy.reject_flagged_diffs and diff:
-            from etbh.verifier.diff_policy import diff_flags
+            from etbh.verifier.diff_policy import diff_policy
 
-            flags = diff_flags(diff, task)
-            bad = [k for k, v in flags.items() if v is True and k != "ok"]
-            if bad:
+            flags = diff_policy(diff, task)
+            if flags.hard or flags.soft:
                 passed = False
-                notes.append(f"diff rejected by structural policy: {bad}")
+                notes.append("diff rejected by structural policy: " + "; ".join(flags.reasons))
         parsed = {"resolution": outcome.resolution.as_dict(), "parser": parser,
                   "exit_marker": marker, "statuses_parsed": len(statuses)}
         return GradeResult(passed=passed, exit_code=marker if marker is not None else process_exit,

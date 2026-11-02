@@ -20,6 +20,9 @@ class TestEditPass(Probe):
     def _run(self, task: TaskSpec, sandbox: Sandbox) -> ProbeResult:
         if not task.test_files:
             return self.result(None, "task declares no test files")
+        if not task.grader_command and not task.metadata.get("_eval_script_before"):
+            return self.result(None, "no grader command known for this task (benchmark grading not "
+                                     "integrated)")
         expected = task.fail_to_pass + task.pass_to_pass
         with self.disposable(sandbox):
             written = []
@@ -33,6 +36,9 @@ class TestEditPass(Probe):
             if not written:
                 return self.result(False, "could not write any test file (read-only)", written=[])
             grade = self.grade(task, sandbox)
+        if grade.exit_code == 127:
+            return self.result(None, "grader command not found (exit 127); environment problem, not a "
+                                     "grading result", grade=grade.as_dict())
         if grade.parsed.get("timed_out"):
             return self.result(None, f"grader timed out ({grade.notes}); undetermined", written=written,
                                grade=grade.as_dict())

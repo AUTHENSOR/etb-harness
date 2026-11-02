@@ -84,49 +84,78 @@ def run_probes(
     task_ids: list[str] | None = None,
     log: Any = None,
 ) -> RunRecord | RunPlan:
-    plan = make_plan(adapter, n, seed, hardening, include, task_ids)
+    result = run_probe_matrix(adapter, n, seed, [hardening], out_dir, include=include, dry_run=dry_run,
+                              prune=prune, task_ids=task_ids, log=log)
+    return result[0]
+
+
+def run_probe_matrix(
+    adapter: BenchmarkAdapter,
+    n: int,
+    seed: int,
+    hardenings: list[Hardening],
+    out_dir: Path,
+    include: list[str] | None = None,
+    dry_run: bool = False,
+    prune: bool = False,
+    task_ids: list[str] | None = None,
+    log: Any = None,
+) -> list[RunRecord] | list[RunPlan]:
+    """Probe every task under each profile in turn, pulling each task image once.
+
+    One RunRecord (and results directory) per profile, so `summarize` is unchanged. The
+    task image is pruned after the last profile when `prune` is set.
+    """
     say = log or (lambda msg: None)
+    plans = [make_plan(adapter, n, seed, h, include, task_ids) for h in hardenings]
     if dry_run:
-        return plan
-    if isinstance(plan.task_ids, str):
-        raise AdapterUnavailable(f"cannot run: {plan.task_ids}")
+        return plans
+    for plan in plans:
+        if isinstance(plan.task_ids, str):
+            raise AdapterUnavailable(f"cannot run: {plan.task_ids}")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_id = f"{stamp}-{adapter.name}-{hardening.name}-s{seed}"
-    record = RunRecord(run_id=run_id, plan=plan, started=datetime.now(UTC).isoformat(),
-                       host={"platform": platform.platform(), "machine": platform.machine()})
-    probes = build_probes(adapter, hardening, include)
-    for i, task_id in enumerate(plan.task_ids, 1):
-        task = adapter.task_spec(task_id)
-        entry: dict[str, Any] = {"task_id": task_id, "image": task.image,
-                                 "task": task.as_dict(), "probes": [], "seconds": 0.0}
-        say(f"[{i}/{len(plan.task_ids)}] {task_id} image={task.image} "
-            f"platform={task.metadata.get('platform')} runner={task.metadata.get('runner')}")
-        t0 = time.monotonic()
-        try:
-            with adapter.sandbox(task, hardening) as sb:
-                for cmd in pre_agent_commands(hardening, task):
-                    root_exec = getattr(sb, "exec_as", None)
-                    (root_exec(cmd, "root", 600) if root_exec else sb.exec(cmd))
-                if hardening.hash_check_tests:
-                    task.metadata["_test_hashes"] = test_hashes(sb, task)
-                for probe in probes:
-                    result = probe.run(task, sb)
-                    entry["probes"].append(result.as_dict())
-                    say(f"    {result.probe_id:<22} open={result.open!s:<5} {result.seconds:7.1f}s  "
-                        f"{result.evidence[:110]}")
-                if prune and hasattr(sb, "prune_image"):
-                    sb.prune_image()
-        except Exception as err:  # noqa: BLE001 - record and continue with the next task
-            entry["error"] = f"{type(err).__name__}: {err}"
-            record.errors.append(f"{task_id}: {entry['error']}")
-            say(f"    ERROR {entry['error']}")
-        entry["seconds"] = round(time.monotonic() - t0, 3)
-        say(f"    task done in {entry['seconds']:.0f}s")
-        record.tasks.append(entry)
-        write_run(record, out_dir)  # checkpoint after every task
-    record.finished = datetime.now(UTC).isoformat()
-    write_run(record, out_dir)
-    return record
+    host = {"platform": platform.platform(), "machine": platform.machine()}
+    records = [RunRecord(run_id=f"{stamp}-{adapter.name}-{h.name}-s{seed}", plan=plan,
+                         started=datetime.now(UTC).isoformat(), host=dict(host))
+               for h, plan in zip(hardenings, plans, strict=True)]
+    probe_sets = [build_probes(adapter, h, include) for h in hardenings]
+    ids = plans[0].task_ids
+    assert isinstance(ids, list)
+    for i, task_id in enumerate(ids, 1):
+        for j, (hardening, record, probes) in enumerate(zip(hardenings, records, probe_sets, strict=True)):
+            task = adapter.task_spec(task_id)
+            entry: dict[str, Any] = {"task_id": task_id, "image": task.image,
+                                     "task": task.as_dict(), "probes": [], "seconds": 0.0}
+            say(f"[{i}/{len(ids)}] {task_id} profile={hardening.name} image={task.image} "
+                f"platform={task.metadata.get('platform')} runner={task.metadata.get('runner')}")
+            t0 = time.monotonic()
+            last_profile = j == len(hardenings) - 1
+            try:
+                with adapter.sandbox(task, hardening) as sb:
+                    for cmd in pre_agent_commands(hardening, task):
+                        root_exec = getattr(sb, "exec_as", None)
+                        (root_exec(cmd, "root", 600) if root_exec else sb.exec(cmd))
+                    if hardening.hash_check_tests:
+                        task.metadata["_test_hashes"] = test_hashes(sb, task)
+                    for probe in probes:
+                        result = probe.run(task, sb)
+                        entry["probes"].append(result.as_dict())
+                        say(f"    {result.probe_id:<22} open={result.open!s:<5} {result.seconds:7.1f}s  "
+                            f"{result.evidence[:110]}")
+                    if prune and last_profile and hasattr(sb, "prune_image"):
+                        sb.prune_image()
+            except Exception as err:  # noqa: BLE001 - record and continue with the next task
+                entry["error"] = f"{type(err).__name__}: {err}"
+                record.errors.append(f"{task_id}: {entry['error']}")
+                say(f"    ERROR {entry['error']}")
+            entry["seconds"] = round(time.monotonic() - t0, 3)
+            say(f"    task done in {entry['seconds']:.0f}s")
+            record.tasks.append(entry)
+            write_run(record, out_dir)  # checkpoint after every task
+    for record in records:
+        record.finished = datetime.now(UTC).isoformat()
+        write_run(record, out_dir)
+    return records
 
 
 def write_run(record: RunRecord, out_dir: Path) -> Path:

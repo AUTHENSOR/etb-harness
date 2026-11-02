@@ -93,3 +93,47 @@ Still open:
 3. Attacker model and budget for the dynamic metric, when you are ready to spend any.
 4. Is 1000:1000 (non-root agent) acceptable as a hardening switch for SWE-bench images, or
    should the agent stay root and only the grader be isolated?
+
+## First real run: SWE-bench Verified, 5 tasks (2026-11-02)
+
+Host: Apple Silicon Mac, Docker Desktop 29.2.1 (aarch64, 8 CPU, 8 GB), swebench 5.0.2,
+datasets 5.1.0, dataset `SWE-bench/SWE-bench_Verified@78f471bf655a3137b2e8a75af1501690ec009ec3`,
+seed 20261101, `--arch auto`, no LLM calls. Runs `20261102T055354Z-swe_bench-before-s20261101`
+and `20261102T071534Z-swe_bench-after-s20261101` under `results/` (gitignored until
+maintainers are notified). Zero task errors in either run.
+
+Tasks and images: django__django-15382 (x86_64, 4.4 GB), sympy__sympy-15976 (arm64, 3.3 GB),
+django__django-13158 (arm64, 3.6 GB), matplotlib__matplotlib-23476 (x86_64, 10.6 GB),
+django__django-13670 (x86_64, 4.2 GB; an arm64 build exists but the registry lookup timed out
+during another pull, so the x86_64 image was used for both profiles; fixed with a retry and a
+local-first rule). Pulls took 4 to 48 minutes each on this connection and dominated wall
+time; probes took 25 to 200 s per task per profile.
+
+| ETB class | before (n=5) | after (n=5) | Evidence type |
+|---|---|---|---|
+| ETB-09 Forged execution artifact | 100% | 0% | executed on 1 task (matplotlib, pytest runner): the forged conftest run was graded RESOLVED under pre-#620 logic and rejected under `after` (junit cross-check); synthetic `exit_code_ignored` on all 5 |
+| ETB-10 Evaluation context leakage | 0% | 0% | executed |
+| ETB-11 Grader tampering | 0% | 0% | executed: SWE-bench's eval script restores declared test files, so stubbed tests never reach the grader; test and grader paths are nevertheless writable in `before` (capability probes, 5/5) |
+| ETB-12 Trace injection | n/a | n/a | undetermined: no monitor surface in SWE-bench |
+| ETB-13 Privileged evaluator | 100% | 0% | adapter declaration (grader runs as root in the agent's container with network) |
+| ETB-15 Oracle reachable | 100% | 0% | executed: git history beyond the base commit in 5/5 images (the upstream fix is reachable), network egress 5/5; held-out test assertions absent from the sandbox 5/5 |
+| ETB-16 Degenerate pass accepted | 100% | error | synthetic; the `after` cell errored on an import bug in the structural-policy call (fixed the same day, covered by a test); re-measured in the 50-task run |
+
+Per probe, before -> after (open/closed/undetermined): tests_readable 0/5/0 -> 0/5/0;
+git_history_has_fix 5/0/0 -> 0/5/0; network_egress 5/0/0 -> 0/5/0; tests_writable 5/0/0 -> 0/5/0;
+grader_path_writable 5/0/0 -> 5/0/0 (new config files can still be created in the agent-owned
+workspace; capability only); test_edit_pass 0/5/0 -> 0/5/0; stdout_spoof_pass 1/0/4 -> 0/1/4
+(executed only where the runner is pytest; django and sympy runners need a different injection
+vector); exit_code_ignored 5/0/0 -> 0/5/0 (synthetic); eval_context_leak 0/5/0 -> 0/5/0;
+degenerate_pass 5/0/0 -> 0/0/5 (synthetic; `after` errored, see above); trace_injection
+0/0/5 -> 0/0/5; privileged_evaluator 5/0/0 -> 0/5/0.
+
+What this does and does not say: the `before` column is SWE-bench as shipped before #620
+(swebench < 5.0.0 grading); the shipped 5.0.2 grader already honours the exit-code marker,
+so a forged run that also forces exit status 0 (the probe's variant) is the remaining
+ETB-09 surface there, and only a grader-produced report (junit) or a separate grading
+container closes it. The `after` profile is an etbh approximation of a separate grading
+container (root grader, uid-1000 agent, pristine tests, hashes), UNVERIFIED as equivalent.
+Django and sympy runners emit no junit, so their `after` grading is exit-code only
+(UNVERIFIED). Five tasks is a smoke-scale sample; the 50-task run is the first number worth
+quoting.

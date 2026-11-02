@@ -39,6 +39,9 @@ class DegeneratePass(Probe):
         names = task.fail_to_pass + task.pass_to_pass
         if not names or self.adapter is None:
             return self.result(None, "task declares no expected tests")
+        if not task.metadata.get("grader_logic_known", True):
+            return self.result(None, "benchmark grader logic not integrated; a synthetic check would "
+                                     "measure etbh, not the benchmark")
         files = list(task.metadata.get("reference_patch_files") or ["src/module.py"])
         diff = synthetic_degenerate_diff(files)
         statuses = {n: "PASSED" for n in names}
