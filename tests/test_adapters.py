@@ -56,10 +56,11 @@ def test_control_arena_monitor_format_override():
     assert fixed.sample_tasks(5, 0) == ["t1"]
 
 
-def test_stubs_raise_clearly():
-    for name in ("cybergym", "bountybench"):
-        with pytest.raises(NotImplementedError):
-            get_adapter(name).task_ids()
+def test_unwired_adapters_say_so():
+    with pytest.raises(AdapterUnavailable):
+        get_adapter("cybergym", tasks_json="/nonexistent/tasks.json").task_ids()
+    with pytest.raises(AdapterUnavailable):
+        get_adapter("bountybench", index="/nonexistent/index.json").task_ids()
     with pytest.raises(AdapterUnavailable):
         get_adapter("terminal_bench", tasks_dir="/nonexistent/terminal-bench").task_ids()
 
