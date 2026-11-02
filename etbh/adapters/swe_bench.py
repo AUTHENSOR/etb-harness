@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -98,7 +99,8 @@ def image_local(image: str) -> bool:
 
 @cache
 def image_available(image: str) -> bool | None:
-    """Ask the registry whether an image exists. None when the docker CLI is unavailable or
+    """Ask the registry whether an image exists (counts against Docker Hub's pull rate limit, so
+    the adapter no longer calls this during runs). None when the docker CLI is unavailable or
     the registry could not be reached (two attempts; manifest lookups stall while a large
     pull is in flight)."""
     if shutil.which("docker") is None:
@@ -121,27 +123,27 @@ def image_available(image: str) -> bool | None:
     return None
 
 
-def resolve_image(x86_image: str, arch: str) -> tuple[str, str, str]:
-    """(image, docker platform, note) for the requested arch policy."""
+def resolve_image(x86_image: str, arch: str) -> tuple[str, str, str, tuple[str, str] | None]:
+    """(image, docker platform, note, fallback) for the requested arch policy.
+
+    No registry lookups: Docker Hub counts manifest requests against the pull rate limit, so
+    `auto` names the arm64 image as primary with the x86_64 image as a pull-time fallback and
+    lets the sandbox discover which one exists. Images already on disk win, so repeated runs
+    measure the same image.
+    """
     if arch not in ARCHES:
         raise ValueError(f"arch must be one of {ARCHES}")
     if arch == "x86_64":
-        return x86_image, "linux/amd64", "x86_64 requested"
+        return x86_image, "linux/amd64", "x86_64 requested", None
     arm = arm64_variant(x86_image)
     if arch == "arm64":
-        return arm, "linux/arm64", "arm64 requested"
-    # Local first, so repeated runs (before, then after) reuse the image already on disk and
-    # both profiles measure the same image.
+        return arm, "linux/arm64", "arm64 requested", None
     if image_local(arm):
-        return arm, "linux/arm64", "arm64 image already present locally"
+        return arm, "linux/arm64", "arm64 image already present locally", None
     if image_local(x86_image):
-        return x86_image, "linux/amd64", "x86_64 image already present locally"
-    avail = image_available(arm)
-    if avail:
-        return arm, "linux/arm64", "arm64 image available in registry"
-    if avail is None:
-        return x86_image, "linux/amd64", "docker CLI unavailable; assumed x86_64 only (UNVERIFIED)"
-    return x86_image, "linux/amd64", "no arm64 image in registry; x86_64 under emulation"
+        return x86_image, "linux/amd64", "x86_64 image already present locally", None
+    note = "arm64 tried first; x86_64 under emulation if the registry has no arm64 build"
+    return arm, "linux/arm64", note, (x86_image, "linux/amd64")
 
 
 def _as_list(value: Any) -> list[str]:
@@ -254,7 +256,7 @@ class SweBenchAdapter(AdapterBase):
         return self._rows
 
     def version_pins(self) -> dict[str, str]:
-        return {
+        pins = {
             "dataset": self.dataset_name + (" (config default, v2 rows with docker_image)"
                                             if self.variant == "pro" else ""),
             "dataset_split": self.split,
@@ -269,6 +271,14 @@ class SweBenchAdapter(AdapterBase):
                              "pristine tests + hash check + structural diff policy"),
             "grader_timeout_s": str(GRADER_TIMEOUT),
         }
+        if self.variant == "pro":
+            pins["field_mapping"] = (
+                "UNVERIFIED: fail_to_pass/pass_to_pass -> FAIL_TO_PASS/PASS_TO_PASS; docker_image -> "
+                "image; test files from test_patch; workdir detected in the container at sandbox time; "
+                "no grader (Scale run scripts not integrated)")
+            pins["dataset_config_note"] = ("default config = v2 (642 rows, has docker_image); "
+                                           "v1 (731 rows) has no images")
+        return pins
 
     def task_ids(self) -> list[str]:
         return sorted(self._load())
@@ -279,25 +289,31 @@ class SweBenchAdapter(AdapterBase):
         test_files = files_in_patch(test_patch)
         f2p = _as_list(row.get("FAIL_TO_PASS", row.get("fail_to_pass")))
         p2p = _as_list(row.get("PASS_TO_PASS", row.get("pass_to_pass")))
+        fallback: tuple[str, str] | None = None
         if row.get("image"):
-            image, platform, image_note = resolve_image(row["image"], self.arch)
+            image, platform, image_note, fallback = resolve_image(row["image"], self.arch)
         elif row.get("docker_image"):
-            # SWE-bench Pro images (ghcr.io/scaleapi/swe-bench_pro-v2:...). Architecture of the
-            # published manifests UNVERIFIED; let Docker choose and record that.
-            image, platform = row["docker_image"], None
-            image_note = "non-swebench image; platform left to Docker (UNVERIFIED)"
+            # SWE-bench Pro images (ghcr.io/scaleapi/swe-bench_pro-v2:...): single-manifest
+            # linux/amd64 for the instances checked on 2026-11-02; run under emulation here.
+            image, platform = row["docker_image"], "linux/amd64"
+            image_note = "SWE-bench Pro image (ghcr.io); amd64 only on the instances checked, emulated"
         else:
-            image, platform, image_note = resolve_image(image_name(task_id, "x86_64", self.namespace),
-                                                        self.arch)
+            image, platform, image_note, fallback = resolve_image(
+                image_name(task_id, "x86_64", self.namespace), self.arch)
         before, after, spec, grader_source, runner = self._eval_scripts(row, test_files)
+        pro = self.variant == "pro"
         return TaskSpec(
             benchmark=self.name,
             task_id=task_id,
             repo=row.get("repo", ""),
             base_commit=row.get("base_commit", ""),
-            workdir="/testbed",
+            # Pro images keep the repository at /app (WorkingDir of the one image inspected on
+            # 2026-11-02); sandbox() re-detects it with git in case an instance differs.
+            workdir="/app" if pro else "/testbed",
             test_files=test_files,
-            grader_paths=GRADER_PATHS,
+            # Scale's harness applies the test patch and runs tests from scripts mounted at run
+            # time (before_repo_set_cmd references /tests/...), so no grader path lives in the image.
+            grader_paths=[] if pro else GRADER_PATHS,
             grader_command=before,
             image=image,
             has_reference_solution=bool(row.get("patch")),
@@ -313,6 +329,7 @@ class SweBenchAdapter(AdapterBase):
                 "log_parser": row.get("log_parser") or "legacy",
                 "platform": platform,
                 "image_note": image_note,
+                "image_fallback": list(fallback) if fallback else None,
                 "grader_timeout": GRADER_TIMEOUT,
                 "junit_path": JUNIT_PATH,
                 "_eval_script_before": before,
@@ -356,6 +373,7 @@ class SweBenchAdapter(AdapterBase):
     def sandbox(self, task: TaskSpec, hardening: Hardening) -> Iterator[Sandbox]:
         from etbh.sandbox.docker_sandbox import DockerSandbox
 
+        fb = task.metadata.get("image_fallback")
         sb = DockerSandbox(
             task.image,
             workdir=task.workdir,
@@ -364,11 +382,33 @@ class SweBenchAdapter(AdapterBase):
             env=randomized_env(hardening, {}),
             platform=task.metadata.get("platform"),
             agent_user="1000:1000" if hardening.agent_unprivileged else None,
+            fallback=(fb[0], fb[1]) if fb else None,
         )
+        if sb.image != task.image:
+            task.metadata["image_note"] = f"{task.metadata.get('image_note')}; used fallback {sb.image}"
+            task.image, task.metadata["platform"] = sb.image, sb.platform
         try:
+            if self.variant == "pro":
+                self._detect_workdir(task, sb)
             yield sb
         finally:
             sb.close()
+
+    @staticmethod
+    def _detect_workdir(task: TaskSpec, sb: Any) -> None:
+        """Pro images: confirm the repository root with git; fall back to a short search."""
+        root_exec = getattr(sb, "exec_as", None)
+        run = (lambda c: root_exec(c, "root", 60)) if root_exec else (lambda c: sb.exec(c, 60))  # noqa: E731
+        res = run(f"git -C {shlex.quote(task.workdir)} rev-parse --show-toplevel")
+        found = res.stdout.strip() if res.exit_code == 0 else ""
+        if not found:
+            probe = run("for d in /app /testbed /workspace /repo /src /code; do "
+                        "[ -d \"$d/.git\" ] && echo \"$d\" && break; done")
+            found = probe.stdout.strip().splitlines()[0] if probe.stdout.strip() else ""
+        task.metadata["workdir_detected"] = found or "not found (kept configured workdir; UNVERIFIED)"
+        if found and found != task.workdir:
+            task.workdir = found
+            sb.workdir = found
 
     # -- grading -------------------------------------------------------------------------
     def grade(self, task: TaskSpec, sandbox: Sandbox, hardening: Hardening | None = None,
@@ -466,6 +506,8 @@ class SweBenchAdapter(AdapterBase):
                            raw=raw, parsed=parsed, notes=notes + outcome.notes)
 
     def evaluator_privileges(self, task: TaskSpec, hardening: Hardening) -> dict[str, Any] | None:
+        if self.variant == "pro":
+            return None  # Scale's harness layout is not integrated; do not guess
         return {
             "same_container": not hardening.separate_grader_container,
             "write_access": not hardening.separate_grader_container,

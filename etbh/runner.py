@@ -100,11 +100,16 @@ def run_probe_matrix(
     prune: bool = False,
     task_ids: list[str] | None = None,
     log: Any = None,
+    resume: bool = False,
+    min_free_gb: float = 12.0,
 ) -> list[RunRecord] | list[RunPlan]:
     """Probe every task under each profile in turn, pulling each task image once.
 
     One RunRecord (and results directory) per profile, so `summarize` is unchanged. The
-    task image is pruned after the last profile when `prune` is set.
+    task image is pruned after the last profile when `prune` is set. With `resume`, the
+    latest unfinished run under `out_dir` for each profile with the same plan (benchmark,
+    seed, task ids) is continued: tasks already recorded without error are skipped and the
+    run ids are kept.
     """
     say = log or (lambda msg: None)
     plans = [make_plan(adapter, n, seed, h, include, task_ids) for h in hardenings]
@@ -115,13 +120,38 @@ def run_probe_matrix(
             raise AdapterUnavailable(f"cannot run: {plan.task_ids}")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     host = {"platform": platform.platform(), "machine": platform.machine()}
-    records = [RunRecord(run_id=f"{stamp}-{adapter.name}-{h.name}-s{seed}", plan=plan,
-                         started=datetime.now(UTC).isoformat(), host=dict(host))
-               for h, plan in zip(hardenings, plans, strict=True)]
+    records: list[RunRecord] = []
+    for h, plan in zip(hardenings, plans, strict=True):
+        prior = find_resumable(out_dir, adapter.name, h.name, seed, plan.task_ids) if resume else None
+        if prior is not None:
+            prior.plan = plan
+            prior.host.setdefault("resumed", [])
+            prior.host["resumed"].append(datetime.now(UTC).isoformat())
+            say(f"resuming {prior.run_id}: {len(prior.tasks)} task(s) already recorded")
+            records.append(prior)
+        else:
+            run_id = f"{stamp}-{adapter.name}-{h.name}-s{seed}"
+            k = 2
+            while (out_dir / run_id).exists():  # two runs in the same second must not share a directory
+                run_id = f"{stamp}-{adapter.name}-{h.name}-s{seed}-{k}"
+                k += 1
+            records.append(RunRecord(run_id=run_id, plan=plan, started=datetime.now(UTC).isoformat(),
+                                     host=dict(host)))
     probe_sets = [build_probes(adapter, h, include) for h in hardenings]
     ids = plans[0].task_ids
     assert isinstance(ids, list)
+    done: set[str] = set(ids)
+    for record in records:  # a task counts as done only if every profile has it without error
+        done &= {t["task_id"] for t in record.tasks if not t.get("error")}
+    if resume and done:
+        for record in records:  # drop partial entries so profiles stay aligned
+            record.tasks = [t for t in record.tasks if t["task_id"] in done]
+            record.errors = [e for e in record.errors if e.split(":", 1)[0] in done]
+        say(f"skipping {len(done)} task(s) already complete in every profile")
     for i, task_id in enumerate(ids, 1):
+        if task_id in done:
+            continue
+        wait_for_disk(min_free_gb, say)
         for j, (hardening, record, probes) in enumerate(zip(hardenings, records, probe_sets, strict=True)):
             task = adapter.task_spec(task_id)
             entry: dict[str, Any] = {"task_id": task_id, "image": task.image,
@@ -156,6 +186,54 @@ def run_probe_matrix(
         record.finished = datetime.now(UTC).isoformat()
         write_run(record, out_dir)
     return records
+
+
+def free_gb(path: str = "/") -> float:
+    import shutil
+
+    return shutil.disk_usage(path).free / 1e9
+
+
+def wait_for_disk(min_free_gb: float, say: Any, poll_s: int = 300, max_wait_s: int = 6 * 3600) -> None:
+    """Pause before pulling the next image while the internal disk is below the floor.
+
+    Images are several GB and a pull that fails mid-layer leaves partial content behind, so
+    the runner waits (logging every poll) rather than starting a pull it cannot finish. Gives
+    up with an exception after `max_wait_s` so a stuck run does not wait forever.
+    """
+    import time as _time
+
+    if min_free_gb <= 0:
+        return
+    waited = 0
+    while True:
+        free = free_gb()
+        if free >= min_free_gb:
+            return
+        if waited >= max_wait_s:
+            raise AdapterUnavailable(f"internal disk below {min_free_gb} GB free for {max_wait_s}s; stopping")
+        say(f"disk: {free:.1f} GB free < {min_free_gb} GB floor; waiting {poll_s}s before the next pull")
+        _time.sleep(poll_s)
+        waited += poll_s
+
+
+def find_resumable(out_dir: Path, benchmark: str, profile_name: str, seed: int,
+                   task_ids: list[str] | str) -> RunRecord | None:
+    """Latest unfinished run for (benchmark, profile, seed) whose plan lists the same tasks."""
+    best: RunRecord | None = None
+    for path in sorted(out_dir.glob(f"*-{benchmark}-{profile_name}-s{seed}/run.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("finished") or data["plan"].get("task_ids") != task_ids:
+            continue
+        plan = RunPlan(**data["plan"])
+        rec = RunRecord(run_id=data["run_id"], plan=plan, started=data["started"], finished="",
+                        host=data.get("host", {}), tasks=data.get("tasks", []),
+                        llm_cost_usd=data.get("llm_cost_usd", 0.0), errors=data.get("errors", []))
+        best = rec  # sorted by name = by timestamp; keep the latest
+    return best
 
 
 def write_run(record: RunRecord, out_dir: Path) -> Path:

@@ -68,3 +68,43 @@ def test_probe_matrix_runs_every_profile_per_task(tmp_path):
     assert len(list(tmp_path.glob("*/run.json"))) == 2
     assert main(["probe", "--benchmark", "fake", "--n", "1", "--seed", "0", "--profile", "before", "after",
                  "--dry-run", "--out", str(tmp_path)]) == 0
+
+
+def test_resume_continues_unfinished_matrix_run(tmp_path):
+    import json
+
+    from etbh.runner import run_probe_matrix
+
+    adapter = get_adapter("fake", vulnerable=True)
+    full = run_probe_matrix(adapter, 3, 1, [BEFORE, AFTER], tmp_path)
+    ids = full[0].plan.task_ids
+    # simulate an interrupted run: keep only the first task in both profiles, unfinished
+    for rec in full:
+        path = tmp_path / rec.run_id / "run.json"
+        data = json.loads(path.read_text())
+        data["tasks"] = data["tasks"][:1]
+        data["finished"] = ""
+        path.write_text(json.dumps(data))
+    resumed = run_probe_matrix(adapter, 3, 1, [BEFORE, AFTER], tmp_path, resume=True)
+    assert [r.run_id for r in resumed] == [r.run_id for r in full]  # same run ids
+    assert all(len(r.tasks) == 3 and r.finished for r in resumed)
+    assert all([t["task_id"] for t in r.tasks] == ids for r in resumed)
+    assert all(r.host.get("resumed") for r in resumed)
+    assert len(list(tmp_path.glob("*/run.json"))) == 2  # no new run directories
+    # a finished run is not resumed: a fresh one is created
+    fresh = run_probe_matrix(adapter, 3, 1, [BEFORE], tmp_path, resume=True)
+    assert fresh[0].run_id != full[0].run_id
+
+
+def test_disk_floor_waits_then_proceeds(monkeypatch):
+    import etbh.runner as r
+
+    readings = iter([5.0, 5.0, 50.0])
+    monkeypatch.setattr(r, "free_gb", lambda path="/": next(readings))
+    slept = []
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda s: slept.append(s))
+    msgs = []
+    r.wait_for_disk(12.0, msgs.append, poll_s=1)
+    assert slept == [1, 1] and len(msgs) == 2
+    r.wait_for_disk(0, msgs.append)  # disabled: no reading taken

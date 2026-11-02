@@ -21,14 +21,17 @@ from typing import Any
 
 from etbh.adapters.base import AdapterUnavailable, ExecResult
 
+EXEC_CLIENT_TIMEOUT = 7200  # exec/commit calls may legitimately run for a long time
+PULL_CLIENT_TIMEOUT = 120  # a pull stream that goes silent this long is treated as wedged and retried
 
-def docker_client() -> Any:
+
+def docker_client(timeout: int = EXEC_CLIENT_TIMEOUT) -> Any:
     try:
         import docker  # type: ignore
     except ImportError as err:  # pragma: no cover - dependency is declared
         raise AdapterUnavailable("docker SDK not installed") from err
     try:
-        client = docker.from_env()
+        client = docker.from_env(timeout=timeout)
         client.ping()
     except Exception as err:  # docker.errors.DockerException and socket errors
         raise AdapterUnavailable(
@@ -63,6 +66,7 @@ class DockerSandbox:
         platform: str | None = None,
         agent_user: str | None = None,
         pull: bool = True,
+        fallback: tuple[str, str | None] | None = None,
     ) -> None:
         self.image = image
         self.workdir = workdir
@@ -70,33 +74,99 @@ class DockerSandbox:
         self.shell = shell
         self.platform = platform
         self.agent_user = agent_user
-        self._client = docker_client()
+        self.fallback = fallback
+        self._client = docker_client()  # long timeout: execs and commits
+        self._pull_client = docker_client(PULL_CLIENT_TIMEOUT)  # short timeout: detect wedged pulls
         self._env = dict(env or {})
         self._run_kwargs = dict(run_kwargs or {})
         self._run_kwargs.setdefault("network_mode", "bridge" if network_allowed else "none")
         if platform:
             self._run_kwargs["platform"] = platform
         if pull:
-            self._ensure_image()
-        self._container = self._start(image)
+            self._ensure_image()  # may adopt the fallback image and platform
+        self._container = self._start(self.image)
         self._snapshot_images: list[str] = []
 
     # -- lifecycle helpers -------------------------------------------------------------
     def _ensure_image(self) -> None:
+        """Pull the image unless present. Tries `fallback` when the primary does not exist.
+
+        The docker SDK's `images.pull` swallows errors reported in the pull stream, so the
+        low-level streaming API is used and error entries are inspected. Registry rate
+        limits (`toomanyrequests`) are waited out; transient errors are retried.
+        """
+        candidates = [(self.image, self.platform)]
+        if self.fallback:
+            candidates.append(self.fallback)
+        last_error = ""
+        for image, platform in candidates:
+            if self._image_present(image):
+                self._adopt(image, platform)
+                return
+            status, err = self._pull_with_retries(image, platform)
+            if status == "ok":
+                self._adopt(image, platform)
+                return
+            last_error = err
+            if status == "not_found":
+                _log(f"{image}: not in registry ({err[:80]}); trying fallback" if self.fallback else
+                     f"{image}: not in registry ({err[:80]})")
+                continue
+            raise AdapterUnavailable(f"pull failed for {image}: {err[:300]}")
+        raise AdapterUnavailable(f"no image could be pulled: {last_error[:300]}")
+
+    def _adopt(self, image: str, platform: str | None) -> None:
+        self.image = image
+        self.platform = platform
+        if platform:
+            self._run_kwargs["platform"] = platform
+        else:
+            self._run_kwargs.pop("platform", None)
+
+    def _image_present(self, image: str) -> bool:
         import docker  # type: ignore
 
         try:
-            self._client.images.get(self.image)
-            return
+            self._client.images.get(image)
+            return True
         except docker.errors.ImageNotFound:
-            pass
-        repo, _, tag = self.image.rpartition(":")
+            return False
+
+    def _pull_with_retries(self, image: str, platform: str | None) -> tuple[str, str]:
+        repo, _, tag = image.rpartition(":")
         if not repo:
-            repo, tag = self.image, "latest"
-        _log(f"pulling {self.image} ({self.platform or 'default platform'}) ...")
-        t0 = time.monotonic()
-        self._client.images.pull(repo, tag=tag, platform=self.platform)
-        _log(f"pulled {self.image} in {time.monotonic() - t0:.0f}s")
+            repo, tag = image, "latest"
+        waits = [0, 60, 300, 900, 1800, 3600]
+        err = ""
+        for attempt, wait in enumerate(waits):
+            if wait:
+                _log(f"waiting {wait}s before retrying {image} ({err[:80]})")
+                time.sleep(wait)
+            _log(f"pulling {image} ({platform or 'default platform'}) attempt {attempt + 1} ...")
+            t0 = time.monotonic()
+            err = self._pull_once(repo, tag, platform)
+            if not err and self._image_present(image):
+                _log(f"pulled {image} in {time.monotonic() - t0:.0f}s")
+                return "ok", ""
+            low = (err or "image missing after pull").lower()
+            if "not found" in low or "manifest unknown" in low or "denied" in low or "unauthorized" in low \
+                    or "no such image" in low:
+                return "not_found", err or "image missing after pull"
+            # toomanyrequests, timeouts, connection resets: retry with backoff
+            err = err or "image missing after pull"
+        return "error", err
+
+    def _pull_once(self, repo: str, tag: str, platform: str | None) -> str:
+        """Stream one pull; return the error text ('' on success)."""
+        try:
+            stream = self._pull_client.api.pull(repo, tag=tag, stream=True, decode=True, platform=platform)
+            for chunk in stream:
+                if isinstance(chunk, dict) and ("error" in chunk or "errorDetail" in chunk):
+                    detail = chunk.get("errorDetail") or {}
+                    return str(chunk.get("error") or detail.get("message") or chunk)
+        except Exception as exc:  # noqa: BLE001 - APIError, ReadTimeout, connection errors
+            return f"{type(exc).__name__}: {exc}"
+        return ""
 
     def _start(self, image: str) -> Any:
         return self._client.containers.run(

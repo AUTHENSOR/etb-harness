@@ -73,21 +73,21 @@ run with `--prune` so each task image is removed after its probes, keep `n` smal
 per-image cost is known, and move idle run data and image caches to the USB drives rather
 than leaving them on the internal disk.
 
-### Pulls that never return
+### Credential helpers can block every pull
 
-On this machine `~/.docker/config.json` uses `credsStore: desktop`, and `docker-credential-desktop`
-can hang (a keychain prompt nobody answers). When it does, every `docker pull` and `docker
-manifest inspect`, from the CLI or the Python SDK, blocks with no output. Run the harness with an
-empty Docker config so pulls are anonymous and the helper is never consulted:
+On 2026-11-02 every `docker pull` and `docker manifest inspect` on this machine hung with
+no output, from the CLI and the Python SDK alike, because `~/.docker/config.json` named
+`credsStore: desktop` and `docker-credential-desktop` was stuck waiting on a keychain
+prompt. The symptom looked like a network stall or a dropped pull. Run the harness with an
+empty Docker config so pulls are anonymous and no helper is consulted:
 
 ```bash
 mkdir -p ~/.config/etbh/docker && echo '{}' > ~/.config/etbh/docker/config.json
-export DOCKER_CONFIG=~/.config/etbh/docker
-.venv/bin/python runs/pull_images.py --benchmark terminal_bench --n 5 --seed 20261101
+DOCKER_CONFIG=$HOME/.config/etbh/docker uv run etbh probe ...
 ```
 
-`runs/pull_images.py` adds per-attempt timeouts and retries. Docker Hub allows 100 anonymous
-pulls per hour per IP, which is more than a run needs.
+Anonymous pulls are subject to Docker Hub's per-IP rate limit (100 per hour measured here;
+manifest lookups count too), which the sandbox waits out with backoff.
 
 ## Rules
 

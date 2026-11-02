@@ -71,22 +71,20 @@ def test_slice_and_exit_marker():
 
 def test_resolve_image_policies(monkeypatch):
     x86 = "swebench/sweb.eval.x86_64.a_1776_b-1:latest"
-    assert arm64_variant(x86) == "swebench/sweb.eval.arm64.a_1776_b-1:latest"
-    assert resolve_image(x86, "x86_64")[:2] == (x86, "linux/amd64")
-    assert resolve_image(x86, "arm64")[:2] == (arm64_variant(x86), "linux/arm64")
+    arm = arm64_variant(x86)
+    assert arm == "swebench/sweb.eval.arm64.a_1776_b-1:latest"
     import etbh.adapters.swe_bench as m
     monkeypatch.setattr(m, "image_local", lambda img: False)
-    monkeypatch.setattr(m, "image_available", lambda img: True)
-    assert resolve_image(x86, "auto")[:2] == (arm64_variant(x86), "linux/arm64")
-    # local-first: an x86_64 image already on disk wins over a registry arm64 build
-    monkeypatch.setattr(m, "image_local", lambda img: img == x86)
-    assert resolve_image(x86, "auto")[:2] == (x86, "linux/amd64")
-    monkeypatch.setattr(m, "image_local", lambda img: False)
-    monkeypatch.setattr(m, "image_available", lambda img: False)
-    assert resolve_image(x86, "auto")[:2] == (x86, "linux/amd64")
-    monkeypatch.setattr(m, "image_available", lambda img: None)
-    img, plat, note = resolve_image(x86, "auto")
-    assert (img, plat) == (x86, "linux/amd64") and "UNVERIFIED" in note
+    assert resolve_image(x86, "x86_64")[:2] == (x86, "linux/amd64")
+    assert resolve_image(x86, "x86_64")[3] is None
+    assert resolve_image(x86, "arm64")[:2] == (arm, "linux/arm64")
+    img, plat, note, fallback = resolve_image(x86, "auto")
+    assert (img, plat) == (arm, "linux/arm64") and fallback == (x86, "linux/amd64")
+    # local-first: an image already on disk is used as is, with no fallback
+    monkeypatch.setattr(m, "image_local", lambda i: i == x86)
+    assert resolve_image(x86, "auto")[0] == x86 and resolve_image(x86, "auto")[3] is None
+    monkeypatch.setattr(m, "image_local", lambda i: i == arm)
+    assert resolve_image(x86, "auto")[0] == arm
     with pytest.raises(ValueError):
         resolve_image(x86, "riscv")
 
@@ -107,8 +105,7 @@ def _row(**over):
 def _adapter(monkeypatch, row):
     import etbh.adapters.swe_bench as m
     monkeypatch.setattr(m, "image_local", lambda img: False)
-    monkeypatch.setattr(m, "image_available", lambda img: False)
-    return SweBenchAdapter(rows={row["instance_id"]: row}, arch="auto")
+    return SweBenchAdapter(rows={row["instance_id"]: row}, arch="x86_64")
 
 
 def test_task_spec_without_eval_script_uses_generic_runner(monkeypatch):
@@ -184,13 +181,13 @@ def test_pro_rows_map_without_a_grader(monkeypatch):
         "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_Acme__thing-abc-vnan",
         "repo_language": "python", "version": "2.0.0",
     }
-    import etbh.adapters.swe_bench as m
-    monkeypatch.setattr(m, "image_available", lambda img: True)
     ad = SweBenchAdapter(variant="pro", rows={row["instance_id"]: row})
     spec = ad.task_spec(row["instance_id"])
-    assert spec.image.startswith("ghcr.io/scaleapi/") and spec.metadata["platform"] is None
+    assert spec.image.startswith("ghcr.io/scaleapi/") and spec.metadata["platform"] == "linux/amd64"
     assert spec.fail_to_pass == ["tests/test_a.py::test_x"] and spec.test_files == ["tests/test_a.py"]
     assert spec.grader_command == "" and spec.metadata["grader_logic_known"] is False
+    assert spec.workdir == "/app" and spec.grader_paths == []
+    assert ad.evaluator_privileges(spec, BEFORE) is None
     assert "UNVERIFIED" in spec.metadata["grader_source"]
     # grading probes refuse to guess when the benchmark grader is not integrated
     from etbh.probes import build_probes
@@ -215,3 +212,64 @@ def test_synthetic_probes_under_after_profile(monkeypatch):
     before = {p.probe_id: p.run(spec, None)
               for p in build_probes(ad, BEFORE, ["exit_code_ignored", "degenerate_pass"])}
     assert before["exit_code_ignored"].open is True and before["degenerate_pass"].open is True
+
+
+def test_pro_workdir_detection_updates_task(monkeypatch):
+    from etbh.adapters.base import ExecResult
+
+    class SB:
+        workdir = "/app"
+
+        def exec_as(self, cmd, user, timeout):
+            if "rev-parse" in cmd:
+                return ExecResult(0, "/code/repo\n")
+            return ExecResult(1, "")
+
+    ad = SweBenchAdapter(variant="pro", rows={})
+    from etbh.adapters.base import TaskSpec
+
+    task = TaskSpec(benchmark="swe_bench_pro", task_id="x", workdir="/app")
+    sb = SB()
+    ad._detect_workdir(task, sb)
+    assert task.workdir == "/code/repo" and sb.workdir == "/code/repo"
+    assert task.metadata["workdir_detected"] == "/code/repo"
+
+
+def test_sandbox_starts_the_fallback_image_it_adopted(monkeypatch):
+    docker = pytest.importorskip("docker")
+    import etbh.sandbox.docker_sandbox as ds
+
+    arm = "swebench/sweb.eval.arm64.x_1776_y-1:latest"
+    x86 = "swebench/sweb.eval.x86_64.x_1776_y-1:latest"
+    started: list[tuple[str, dict]] = []
+
+    class Images:
+        def get(self, name):
+            if name == x86 and any(s[0] == "pulled" for s in started):
+                return object()
+            raise docker.errors.ImageNotFound(name)
+
+    class Api:
+        def pull(self, repo, tag, stream, decode, platform):
+            if repo + ":" + tag == arm:
+                yield {"error": "pull access denied for " + repo + ", repository does not exist: not found"}
+                return
+            started.append(("pulled", {"repo": repo, "platform": platform}))
+            yield {"status": "Downloaded newer image"}
+
+    class Containers:
+        def run(self, image, **kwargs):
+            started.append((image, kwargs))
+            return object()
+
+    class Client:
+        images = Images()
+        api = Api()
+        containers = Containers()
+
+    monkeypatch.setattr(ds, "docker_client", lambda timeout=0: Client())
+    monkeypatch.setattr(ds, "_log", lambda msg: None)
+    sb = ds.DockerSandbox(arm, platform="linux/arm64", fallback=(x86, "linux/amd64"))
+    assert sb.image == x86 and sb.platform == "linux/amd64"
+    run_calls = [s for s in started if s[0] != "pulled"]
+    assert run_calls and run_calls[-1][0] == x86 and run_calls[-1][1]["platform"] == "linux/amd64"

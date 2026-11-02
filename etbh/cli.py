@@ -29,6 +29,10 @@ def _add_probe(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--prune", action="store_true", help="remove each task image after use")
     p.add_argument("--task-ids", nargs="*", default=None,
                    help="probe exactly these task ids instead of the seeded sample")
+    p.add_argument("--resume", action="store_true",
+                   help="continue the latest unfinished run with the same plan under --out")
+    p.add_argument("--min-free-gb", type=float, default=12.0,
+                   help="pause before each task while the internal disk has less free space (0 disables)")
     _add_adapter_options(p)
 
 
@@ -103,7 +107,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
     adapter = get_adapter(args.benchmark, **_adapter_kwargs(args))
     results = run_probe_matrix(adapter, args.n, args.seed, [profile(p) for p in args.profile], args.out,
                                include=args.probes, dry_run=args.dry_run, prune=args.prune,
-                               task_ids=args.task_ids,
+                               task_ids=args.task_ids, resume=args.resume, min_free_gb=args.min_free_gb,
                                log=lambda msg: print(msg, file=sys.stderr, flush=True))
     if results and isinstance(results[0], RunPlan):
         plans = [{"dry_run": True, **r.as_dict()} for r in results]

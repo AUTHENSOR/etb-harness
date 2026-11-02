@@ -66,6 +66,12 @@ Resolved on 2026-11-02:
 
 Still open:
 
+- Docker Hub's anonymous pull rate limit (100 per hour per IP, measured 2026-11-02; this
+  machine is not logged in) bounds how fast image-heavy runs can go; manifest lookups count
+  too, so the adapter no longer asks the registry about arm64 builds and instead tries the
+  arm64 image first with an x86_64 fallback at pull time. A `docker login` would raise the
+  limit. The docker SDK's `images.pull` hides stream errors; the sandbox now streams the pull
+  and retries with backoff.
 - control-arena 20.x setting names, dataset API and formatter import paths.
 - Harbor dataset registry id for Terminal-Bench 2.0.
 - SWE-bench Pro row format and image source.
