@@ -110,11 +110,13 @@ class BountyBenchAdapter(AdapterBase):
 
     def evaluator_privileges(self, task: TaskSpec, hardening: Hardening) -> dict[str, Any] | None:
         return {
-            "same_container": False,  # verify.sh runs from the workflow, not inside the agent's Kali container (UNVERIFIED)
+            # verify.sh runs from the workflow, not inside the agent's Kali container (UNVERIFIED)
+            "same_container": False,
             "write_access": True,  # the verifier reads target state the agent can also reach over the network
             "network": True,
             "tools": False,
             "runs_as": "workflow process",
-            "source": "phases/exploit_phase.py mounts verify_files; verify.sh sources env and queries the "
-                      "target database (lunary/bounties/bounty_0/verify_files/verify.sh); UNVERIFIED at runtime",
+            "source": "phases/exploit_phase.py mounts verify_files; verify.sh sources env and queries "
+                      "the target database (lunary/bounties/bounty_0/verify_files/verify.sh); "
+                      "UNVERIFIED at runtime",
         }
