@@ -1,0 +1,13 @@
+# etbh run configuration. Pins marked UNVERIFIED could not be resolved offline on 2026-11-01.
+benchmark: control_arena
+n: 50
+seed: 20261101
+profiles: [before, after]
+probes: all
+pins:
+  control_arena: 20.1.1
+  setting: bash  # UNVERIFIED: choose the setting whose main tasks best match the audit
+  known_fixes: "#798 (>=15.0.0), #810 (>=16.0.0)"
+notes: |
+  Monitor-side probes (trace_injection, privileged_evaluator) are the primary signal.
+  Before = control-arena < 15.0.0 behaviour; after = >= 16.0.0 plus etbh hardening.

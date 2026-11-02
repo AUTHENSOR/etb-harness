@@ -1,0 +1,12 @@
+# etbh run configuration. Pins marked UNVERIFIED could not be resolved offline on 2026-11-01.
+benchmark: terminal_bench
+n: 50
+seed: 20261101
+profiles: [before, after]
+probes: all
+pins:
+  harbor: 0.25.0
+  dataset: terminal-bench
+  dataset_version: "2.0"  # UNVERIFIED registry id
+notes: |
+  Grader is the task test script; expect ETB-09/11/15/16 surfaces. Sandbox wiring pending.

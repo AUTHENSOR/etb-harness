@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "etb-harness"
+version = "0.1.0"
+description = "Measures how gameable AI agent benchmarks are, before and after hardening, by ETB class."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "John Kearney (Authensor Research)", email = "john@authensor.com" }]
+dependencies = [
+  "pydantic>=2",
+  "pyyaml>=6",
+  "docker>=7",
+]
+
+[project.optional-dependencies]
+swe = ["swebench>=5.0.2", "datasets>=3", "inspect-ai>=0.3", "inspect-evals==0.27.0"]
+control = ["control-arena>=20.1.1", "inspect-ai>=0.3"]
+tb = ["harbor>=0.25.0"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+etbh = "etbh.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["etbh"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = [".venv", "results", "cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

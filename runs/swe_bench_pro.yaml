@@ -1,0 +1,14 @@
+# etbh run configuration. Dataset pin resolved 2026-11-02; field names and images UNVERIFIED.
+benchmark: swe_bench_pro
+n: 50
+seed: 20261101
+profiles: [before, after]
+probes: all
+arch: auto
+pins:
+  dataset: ScaleAI/SWE-bench_Pro  # public split, 731 instances
+  dataset_revision: 2d52cb3df914a3fcf80c7f66738b3a88ae37fc50  # HF commit of 2026-09-22
+  images: UNVERIFIED  # scaleapi/SWE-bench_Pro-os documents the image source
+notes: |
+  Public split only; the commercial and held-out splits are not available. The adapter
+  falls back to the generic pytest grader until the Pro row format is checked.

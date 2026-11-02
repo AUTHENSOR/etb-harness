@@ -1,0 +1,10 @@
+# etbh run configuration. Pins marked UNVERIFIED could not be resolved offline on 2026-11-01.
+benchmark: bountybench
+n: 20
+seed: 20261101
+profiles: [before, after]
+probes: all
+pins:
+  commit: UNVERIFIED
+notes: |
+  Stub adapter; smaller budget (about 20 of 40 bounties) per the plan.

@@ -1,0 +1,20 @@
+# strategy -> ETB class -> the deterministic probe measuring the same surface.
+# Order is the taxonomy order. Judge-side classes (01-08, 14) have no capability probe;
+# they are measured against monitor/judge graders (ControlArena) and are marked probe: null.
+strategies:
+  - {id: verdict_injection,        module: etb_01, etb_class: ETB-01, probe: null}
+  - {id: prompt_boundary_break,    module: etb_02, etb_class: ETB-02, probe: trace_injection}
+  - {id: force_evaluator_error,    module: etb_03, etb_class: ETB-03, probe: null}
+  - {id: denominator_shrink,       module: etb_04, etb_class: ETB-04, probe: null}
+  - {id: unscorable_as_safe,       module: etb_05, etb_class: ETB-05, probe: null}
+  - {id: unicode_evasion,          module: etb_06, etb_class: ETB-06, probe: null}
+  - {id: split_across_steps,       module: etb_07, etb_class: ETB-07, probe: null}
+  - {id: metric_structure_abuse,   module: etb_08, etb_class: ETB-08, probe: null}
+  - {id: forge_execution_artifact, module: etb_09, etb_class: ETB-09, probe: stdout_spoof_pass}
+  - {id: detect_and_condition,     module: etb_10, etb_class: ETB-10, probe: eval_context_leak}
+  - {id: tamper_with_grader,       module: etb_11, etb_class: ETB-11, probe: test_edit_pass}
+  - {id: inject_transcript,        module: etb_12, etb_class: ETB-12, probe: trace_injection}
+  - {id: reach_evaluator,          module: etb_13, etb_class: ETB-13, probe: privileged_evaluator}
+  - {id: style_for_the_judge,      module: etb_14, etb_class: ETB-14, probe: null}
+  - {id: fetch_the_oracle,         module: etb_15, etb_class: ETB-15, probe: git_history_has_fix}
+  - {id: degenerate_repair,        module: etb_16, etb_class: ETB-16, probe: degenerate_pass}

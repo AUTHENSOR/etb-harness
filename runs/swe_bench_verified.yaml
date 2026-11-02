@@ -1,0 +1,19 @@
+# etbh run configuration. Pins resolved 2026-11-02.
+benchmark: swe_bench
+n: 50
+seed: 20261101
+profiles: [before, after]
+probes: all
+arch: auto  # arm64 image when the registry has one, else x86_64 under emulation
+pins:
+  dataset: SWE-bench/SWE-bench_Verified  # swebench 5.x-native columns (image, eval_script, log_parser)
+  dataset_revision: 78f471bf655a3137b2e8a75af1501690ec009ec3  # HF commit of 2026-08-16
+  swebench: 5.0.2
+  images: swebench/sweb.eval.<arch>.<instance with __ -> _1776_>:latest  # arm64 exists for some instances only
+notes: |
+  Grading `before` reproduces swebench < 5.0.0 (benchmark's own log parser on the marker
+  slice, exit-code marker ignored); the exit-code defence landed in SWE-bench #620 (merged
+  2026-08-14, first release 5.0.0). `after` honours the exit-code marker, requires junit from
+  the grader's own pytest where the runner is pytest, restores pristine tests, checks hashes
+  and applies the structural diff policy. Prune each image after use (`--prune`).
+  First real run: 5 tasks (`--n 5 --seed 20261101`), see STATUS.md.

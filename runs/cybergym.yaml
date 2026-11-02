@@ -1,0 +1,10 @@
+# etbh run configuration. Pins marked UNVERIFIED could not be resolved offline on 2026-11-01.
+benchmark: cybergym
+n: 50
+seed: 20261101
+profiles: [before, after]
+probes: all
+pins:
+  release: UNVERIFIED
+notes: |
+  Stub adapter. Needs the task archive and images from the CyberGym release.
