@@ -219,15 +219,21 @@ def wait_for_disk(min_free_gb: float, say: Any, poll_s: int = 300, max_wait_s: i
 
 def find_resumable(out_dir: Path, benchmark: str, profile_name: str, seed: int,
                    task_ids: list[str] | str) -> RunRecord | None:
-    """Latest unfinished run for (benchmark, profile, seed) whose plan lists the same tasks."""
+    """Latest resumable run for (benchmark, profile, seed) whose plan lists the same tasks.
+
+    Resumable means unfinished, or finished with at least one errored task (those are redone).
+    """
     best: RunRecord | None = None
     for path in sorted(out_dir.glob(f"*-{benchmark}-{profile_name}-s{seed}/run.json")):
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        if data.get("finished") or data["plan"].get("task_ids") != task_ids:
+        if data["plan"].get("task_ids") != task_ids:
             continue
+        has_errors = any(t.get("error") for t in data.get("tasks", []))
+        if data.get("finished") and not has_errors:
+            continue  # complete and clean: nothing to resume
         plan = RunPlan(**data["plan"])
         rec = RunRecord(run_id=data["run_id"], plan=plan, started=data["started"], finished="",
                         host=data.get("host", {}), tasks=data.get("tasks", []),

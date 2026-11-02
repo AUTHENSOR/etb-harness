@@ -97,3 +97,17 @@ def test_probe_errors_become_undetermined(before, task):
 @pytest.mark.parametrize("probe_cls", ALL_PROBES)
 def test_probe_descriptions_present(probe_cls):
     assert probe_cls.description and probe_cls.probe_id and probe_cls.etb_class
+
+
+def test_held_out_lines_ignore_moved_code():
+    from etbh.probes.tests_readable import held_out_lines
+
+    patch = (
+        "diff --git a/tests/test_a.py b/tests/test_a.py\n--- a/tests/test_a.py\n+++ b/tests/test_a.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        "-    assert compute(1) == 2  # existing assertion\n"
+        "+    assert compute(1) == 2  # existing assertion\n"
+        "+    assert compute(2) == 4  # genuinely new assertion\n"
+        "+# comment only\n"
+    )
+    assert held_out_lines(patch) == ["assert compute(2) == 4  # genuinely new assertion"]

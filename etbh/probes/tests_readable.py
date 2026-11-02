@@ -59,12 +59,21 @@ class TestsReadable(Probe):
 
 
 def held_out_lines(test_patch: str) -> list[str]:
-    """Substantive added lines of a test patch: what the agent must not be able to read."""
-    out: list[str] = []
+    """Substantive *new* lines of a test patch: what the agent must not be able to read.
+
+    Added lines that also appear as removed lines are moved or re-indented code, not new
+    test content, so they are excluded; otherwise a patch that reshuffles an existing test
+    file would look like a leaked oracle.
+    """
+    added: list[str] = []
+    removed: set[str] = set()
     for line in (test_patch or "").splitlines():
-        if not line.startswith("+") or line.startswith("+++"):
+        if line.startswith("+++") or line.startswith("---"):
             continue
-        body = line[1:].strip()
-        if len(body) >= 20 and not body.startswith("#"):
-            out.append(body)
-    return out
+        if line.startswith("-"):
+            removed.add(line[1:].strip())
+        elif line.startswith("+"):
+            body = line[1:].strip()
+            if len(body) >= 20 and not body.startswith("#"):
+                added.append(body)
+    return [a for a in added if a not in removed]

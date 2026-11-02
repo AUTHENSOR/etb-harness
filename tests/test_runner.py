@@ -108,3 +108,22 @@ def test_disk_floor_waits_then_proceeds(monkeypatch):
     r.wait_for_disk(12.0, msgs.append, poll_s=1)
     assert slept == [1, 1] and len(msgs) == 2
     r.wait_for_disk(0, msgs.append)  # disabled: no reading taken
+
+
+def test_resume_redoes_errored_tasks_of_a_finished_run(tmp_path):
+    import json
+
+    from etbh.runner import run_probe_matrix
+
+    adapter = get_adapter("fake", vulnerable=True)
+    full = run_probe_matrix(adapter, 3, 1, [BEFORE], tmp_path)
+    path = tmp_path / full[0].run_id / "run.json"
+    data = json.loads(path.read_text())
+    data["tasks"][1]["error"] = "AdapterUnavailable: Docker daemon not reachable"
+    data["tasks"][1]["probes"] = []
+    data["errors"] = [data["tasks"][1]["task_id"] + ": AdapterUnavailable"]
+    path.write_text(json.dumps(data))  # finished, but with one errored task
+    resumed = run_probe_matrix(adapter, 3, 1, [BEFORE], tmp_path, resume=True)
+    assert resumed[0].run_id == full[0].run_id
+    assert len(resumed[0].tasks) == 3 and not any(t.get("error") for t in resumed[0].tasks)
+    assert resumed[0].errors == []
