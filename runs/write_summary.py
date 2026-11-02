@@ -132,7 +132,8 @@ def main() -> int:
         lines.append(f"Measured on {version} (run `{run['run_id']}`, seed {run['plan']['seed']}, "
                      f"{rates['tasks_probed']} tasks). "
                      f"Open surfaces: {', '.join(executed)}. Each maps to a class in the ETB taxonomy with a "
-                     "fix pattern; where we have a patch it is linked from the registry entry. We would like to "
+                     "fix pattern; where we have a patch it is linked from the registry entry. We would like"
+                     "to "
                      "coordinate on the fix before publishing the entry (policy: public filing is the "
                      "notification; entry no earlier than 14 days after filing or when a fix lands).")
         lines.append("")
