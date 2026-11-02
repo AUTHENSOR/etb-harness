@@ -127,3 +127,20 @@ def test_resume_redoes_errored_tasks_of_a_finished_run(tmp_path):
     assert resumed[0].run_id == full[0].run_id
     assert len(resumed[0].tasks) == 3 and not any(t.get("error") for t in resumed[0].tasks)
     assert resumed[0].errors == []
+
+
+def test_resume_with_redo_remeasures_named_tasks(tmp_path):
+    from etbh.runner import run_probe_matrix
+
+    adapter = get_adapter("fake", vulnerable=True)
+    full = run_probe_matrix(adapter, 3, 1, [BEFORE, AFTER], tmp_path)
+    ids = full[0].plan.task_ids
+    resumed = run_probe_matrix(adapter, 3, 1, [BEFORE, AFTER], tmp_path, resume=True,
+                               redo=[ids[1]], redo_reason="probe fix")
+    assert [r.run_id for r in resumed] == [r.run_id for r in full]
+    assert all(len(r.tasks) == 3 and [t["task_id"] for t in r.tasks] == ids for r in resumed)
+    assert resumed[0].host["redone"][0]["ids"] == [ids[1]]
+    assert resumed[0].host["redone"][0]["reason"] == "probe fix"
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        run_probe_matrix(adapter, 3, 1, [BEFORE], tmp_path, resume=True, redo=["nope"])

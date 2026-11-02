@@ -52,6 +52,7 @@ def test_test_command_lines_and_runner_kind():
     assert runner_kind(["bin/test -C --verbose sympy/x.py"]) == "sympy"
     assert runner_kind(["python -m pytest tests"]) == "pytest"
     assert runner_kind(["make test"]) == "unknown"
+    assert runner_kind(["tox --current-env -epy39 -v -- tests/test_ext_autodoc.py"]) == "pytest"
 
 
 def test_inject_junit_only_touches_pytest_inside_markers():
@@ -273,3 +274,23 @@ def test_sandbox_starts_the_fallback_image_it_adopted(monkeypatch):
     assert sb.image == x86 and sb.platform == "linux/amd64"
     run_calls = [s for s in started if s[0] != "pulled"]
     assert run_calls and run_calls[-1][0] == x86 and run_calls[-1][1]["platform"] == "linux/amd64"
+
+
+def test_sandbox_write_chunks_large_content(monkeypatch):
+    import etbh.sandbox.docker_sandbox as ds
+
+    calls: list[str] = []
+
+    class SB(ds.DockerSandbox):
+        def __init__(self):  # bypass docker entirely
+            self.agent_user = None
+
+        def exec_as(self, cmd, user, timeout=600):
+            calls.append(cmd)
+            from etbh.adapters.base import ExecResult
+            return ExecResult(0, "")
+
+    sb = SB()
+    sb._write("/testbed/conftest.py", "x" * 200_000, None)
+    assert len(calls) > 1 and all(len(c) < 70_000 for c in calls)
+    assert "> /testbed/conftest.py" in calls[0] and all(">> /testbed/conftest.py" in c for c in calls[1:])

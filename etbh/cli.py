@@ -33,6 +33,9 @@ def _add_probe(sub: argparse._SubParsersAction) -> None:
                    help="continue the latest unfinished run with the same plan under --out")
     p.add_argument("--min-free-gb", type=float, default=12.0,
                    help="pause before each task while the internal disk has less free space (0 disables)")
+    p.add_argument("--redo", nargs="*", default=None,
+                   help="with --resume: re-measure these task ids even though they completed")
+    p.add_argument("--redo-reason", default="", help="why the --redo tasks are re-measured (recorded)")
     _add_adapter_options(p)
 
 
@@ -108,6 +111,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
     results = run_probe_matrix(adapter, args.n, args.seed, [profile(p) for p in args.profile], args.out,
                                include=args.probes, dry_run=args.dry_run, prune=args.prune,
                                task_ids=args.task_ids, resume=args.resume, min_free_gb=args.min_free_gb,
+                               redo=args.redo, redo_reason=args.redo_reason,
                                log=lambda msg: print(msg, file=sys.stderr, flush=True))
     if results and isinstance(results[0], RunPlan):
         plans = [{"dry_run": True, **r.as_dict()} for r in results]

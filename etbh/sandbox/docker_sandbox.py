@@ -201,14 +201,20 @@ class DockerSandbox:
     def write_file_as_root(self, path: str, content: str) -> None:
         self._write(path, content, None)
 
+    WRITE_CHUNK = 48_000  # base64 characters per exec; keeps every command far below ARG_MAX
+
     def _write(self, path: str, content: str, user: str | None) -> None:
         directory = path.rpartition("/")[0] or "/"
         payload = base64.b64encode(content.encode()).decode()
-        cmd = (f"mkdir -p {shlex.quote(directory)} && printf %s {shlex.quote(payload)} | "
-               f"base64 -d > {shlex.quote(path)}")
-        res = self.exec_as(cmd, user, timeout=120)
-        if res.exit_code != 0:
-            raise PermissionError(f"write failed: {path}: {res.stderr.strip()[:200]}")
+        chunks = [payload[i:i + self.WRITE_CHUNK] for i in range(0, len(payload), self.WRITE_CHUNK)] or [""]
+        qpath = shlex.quote(path)
+        for i, chunk in enumerate(chunks):
+            redirect = ">" if i == 0 else ">>"
+            cmd = (f"mkdir -p {shlex.quote(directory)} && printf %s {shlex.quote(chunk)} | "
+                   f"base64 -d {redirect} {qpath}")
+            res = self.exec_as(cmd, user, timeout=120)
+            if res.exit_code != 0:
+                raise PermissionError(f"write failed: {path}: {res.stderr.strip()[:200]}")
 
     def path_exists(self, path: str) -> bool:
         return self.exec(f"test -e {shlex.quote(path)}", timeout=30).exit_code == 0

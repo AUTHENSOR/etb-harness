@@ -102,6 +102,8 @@ def run_probe_matrix(
     log: Any = None,
     resume: bool = False,
     min_free_gb: float = 12.0,
+    redo: list[str] | None = None,
+    redo_reason: str = "",
 ) -> list[RunRecord] | list[RunPlan]:
     """Probe every task under each profile in turn, pulling each task image once.
 
@@ -122,7 +124,8 @@ def run_probe_matrix(
     host = {"platform": platform.platform(), "machine": platform.machine()}
     records: list[RunRecord] = []
     for h, plan in zip(hardenings, plans, strict=True):
-        prior = find_resumable(out_dir, adapter.name, h.name, seed, plan.task_ids) if resume else None
+        prior = (find_resumable(out_dir, adapter.name, h.name, seed, plan.task_ids, allow_clean=bool(redo))
+                 if resume else None)
         if prior is not None:
             prior.plan = plan
             prior.host.setdefault("resumed", [])
@@ -143,11 +146,21 @@ def run_probe_matrix(
     done: set[str] = set(ids)
     for record in records:  # a task counts as done only if every profile has it without error
         done &= {t["task_id"] for t in record.tasks if not t.get("error")}
+    if resume and redo:
+        unknown = sorted(set(redo) - set(ids))
+        if unknown:
+            raise ValueError(f"--redo ids not in this run's plan: {unknown}")
+        done -= set(redo)
+        for record in records:
+            record.host.setdefault("redone", []).append(
+                {"ids": sorted(redo), "reason": redo_reason, "at": datetime.now(UTC).isoformat()})
+        say(f"redoing {len(redo)} task(s): {redo_reason or 'no reason given'}")
     if resume and done:
         for record in records:  # drop partial entries so profiles stay aligned
             record.tasks = [t for t in record.tasks if t["task_id"] in done]
             record.errors = [e for e in record.errors if e.split(":", 1)[0] in done]
         say(f"skipping {len(done)} task(s) already complete in every profile")
+    order = {task_id: i for i, task_id in enumerate(ids)}
     for i, task_id in enumerate(ids, 1):
         if task_id in done:
             continue
@@ -181,6 +194,7 @@ def run_probe_matrix(
             entry["seconds"] = round(time.monotonic() - t0, 3)
             say(f"    task done in {entry['seconds']:.0f}s")
             record.tasks.append(entry)
+            record.tasks.sort(key=lambda e: order.get(e["task_id"], len(order)))  # keep plan order
             write_run(record, out_dir)  # checkpoint after every task
     for record in records:
         record.finished = datetime.now(UTC).isoformat()
@@ -218,10 +232,11 @@ def wait_for_disk(min_free_gb: float, say: Any, poll_s: int = 300, max_wait_s: i
 
 
 def find_resumable(out_dir: Path, benchmark: str, profile_name: str, seed: int,
-                   task_ids: list[str] | str) -> RunRecord | None:
+                   task_ids: list[str] | str, allow_clean: bool = False) -> RunRecord | None:
     """Latest resumable run for (benchmark, profile, seed) whose plan lists the same tasks.
 
-    Resumable means unfinished, or finished with at least one errored task (those are redone).
+    Resumable means unfinished, or finished with at least one errored task (those are redone),
+    or any matching run when `allow_clean` (used with --redo to re-measure named tasks).
     """
     best: RunRecord | None = None
     for path in sorted(out_dir.glob(f"*-{benchmark}-{profile_name}-s{seed}/run.json")):
@@ -232,7 +247,7 @@ def find_resumable(out_dir: Path, benchmark: str, profile_name: str, seed: int,
         if data["plan"].get("task_ids") != task_ids:
             continue
         has_errors = any(t.get("error") for t in data.get("tasks", []))
-        if data.get("finished") and not has_errors:
+        if data.get("finished") and not has_errors and not allow_clean:
             continue  # complete and clean: nothing to resume
         plan = RunPlan(**data["plan"])
         rec = RunRecord(run_id=data["run_id"], plan=plan, started=data["started"], finished="",

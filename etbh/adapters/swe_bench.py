@@ -183,6 +183,8 @@ def runner_kind(command_lines: list[str]) -> str:
         return "sympy"
     if _PYTEST_RE.search(cmd):
         return "pytest"
+    if re.search(r"(?<![\w/.-])tox(?![\w.-])", cmd):
+        return "pytest"  # tox -- <args> runs pytest in the SWE-bench repositories that use it (sphinx)
     return "unknown"
 
 

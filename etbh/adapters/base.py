@@ -77,7 +77,7 @@ class GradeResult:
 
     def as_dict(self) -> dict[str, Any]:
         return {"passed": self.passed, "exit_code": self.exit_code, "parsed": self.parsed,
-                "notes": list(self.notes)}
+                "notes": list(self.notes), "raw_tail": (self.raw or "")[-3000:]}
 
 
 class BenchmarkAdapter(Protocol):
