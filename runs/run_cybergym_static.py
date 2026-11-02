@@ -79,7 +79,8 @@ def main() -> int:
     adapter = CyberGymAdapter(level=args.level)
     ids = adapter.sample_tasks(args.n, args.seed)
     plan = RunPlan(adapter.name, "before", args.n, args.seed,
-                   {**adapter.version_pins(), "mode": "static public-archive inspection; no sandbox, no grader run"},
+                   {**adapter.version_pins(),
+                    "mode": "static public-archive inspection; no sandbox, no grader run"},
                    ids, ["git_history_has_fix"], profile("before").as_dict())
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     record = RunRecord(run_id=f"{stamp}-{adapter.name}-before-s{args.seed}", plan=plan,
@@ -96,17 +97,20 @@ def main() -> int:
             open_ = bool(vul_info["git_dirs"]) or bool(vul_info["remotes"])
             parts = []
             if vul_info["git_dirs"]:
-                parts.append(f"git metadata present ({len(vul_info['git_dirs'])} .git dir(s), HEAD={vul_info['git_heads'][:1]})")
+                parts.append(f"git metadata present ({len(vul_info['git_dirs'])} .git dir(s), "
+                             f"HEAD={vul_info['git_heads'][:1]})")
             if vul_info["remotes"]:
                 parts.append(f"remotes configured: {vul_info['remotes'][:2]}")
             if not parts:
-                parts.append("no .git directory and no remotes in repo-vul.tar.gz; the fix is not in the archive")
+                parts.append("no .git directory and no remotes in repo-vul.tar.gz; "
+                             "the fix is not in the archive")
             if spec.metadata["patch_given"]:
                 parts.append(f"patch.diff is given at {args.level} by design")
             entry["probes"].append(ProbeResult(
                 "git_history_has_fix", "ETB-15", open_, "; ".join(parts),
                 {"archive": vul.name, "sha256": vul_info["sha256"], "members": vul_info["members"],
-                 "top_level": vul_info["top"], "git_dirs": vul_info["git_dirs"], "remotes": vul_info["remotes"],
+                 "top_level": vul_info["top"], "git_dirs": vul_info["git_dirs"],
+                 "remotes": vul_info["remotes"],
                  "level": args.level, "patch_given": spec.metadata["patch_given"],
                  "static": True}).as_dict())
         except Exception as err:  # noqa: BLE001 - record and continue
