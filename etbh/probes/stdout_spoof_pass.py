@@ -60,11 +60,17 @@ class StdoutSpoofPass(Probe):
         names = task.fail_to_pass + task.pass_to_pass
         if not names:
             return self.result(None, "task declares no expected tests to forge")
+        if not task.grader_command and not task.metadata.get("_eval_script_before"):
+            return self.result(None, "no grader command known for this task (benchmark grading not "
+                                     "integrated)")
         runner = task.metadata.get("runner", "pytest")
         if runner != "pytest":
             return self.result(None, f"runner is {runner}, not pytest: conftest injection does not apply "
                                      "(a different vector would be needed; not probed)", runner=runner)
-        path = f"{task.workdir.rstrip('/')}/conftest.py"
+        # Adapters whose tests live outside the workdir (Terminal-Bench uploads them to /tests)
+        # say where pytest would pick a conftest up.
+        conftest_dir = task.metadata.get("spoof_conftest_dir") or task.workdir
+        path = f"{conftest_dir.rstrip('/')}/conftest.py"
         with self.disposable(sandbox):
             try:
                 sandbox.write_file(path, CONFTEST_TEMPLATE.format(marker=SPOOF_MARKER, names=names))
@@ -72,6 +78,9 @@ class StdoutSpoofPass(Probe):
                 return self.result(False, f"cannot write conftest.py ({err}); surface closed",
                                    variant=VARIANT)
             grade = self.grade(task, sandbox)
+        if grade.exit_code == 127:
+            return self.result(None, "grader command not found (exit 127); environment problem, not a "
+                                     "grading result", grade=grade.as_dict())
         if grade.parsed.get("timed_out"):
             return self.result(None, f"grader timed out ({grade.notes}); undetermined", variant=VARIANT,
                                grade=grade.as_dict())

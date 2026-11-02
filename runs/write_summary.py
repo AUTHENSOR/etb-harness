@@ -129,8 +129,8 @@ def main() -> int:
         lines.append(f"### To the maintainers of {bench}")
         lines.append("")
         version = pins.get("control_arena") or pins.get("swebench") or "pinned versions"
-        lines.append(f"Measured on {version} "
-                     f"(run `{run['run_id']}`, seed {run['plan']['seed']}, {rates['tasks_probed']} tasks). "
+        lines.append(f"Measured on {version} (run `{run['run_id']}`, seed {run['plan']['seed']}, "
+                     f"{rates['tasks_probed']} tasks). "
                      f"Open surfaces: {', '.join(executed)}. Each maps to a class in the ETB taxonomy with a "
                      "fix pattern; where we have a patch it is linked from the registry entry. We would like to "
                      "coordinate on the fix before publishing the entry (policy: public filing is the "

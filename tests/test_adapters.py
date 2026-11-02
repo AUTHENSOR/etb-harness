@@ -61,7 +61,7 @@ def test_stubs_raise_clearly():
         with pytest.raises(NotImplementedError):
             get_adapter(name).task_ids()
     with pytest.raises(AdapterUnavailable):
-        get_adapter("terminal_bench").task_ids()
+        get_adapter("terminal_bench", tasks_dir="/nonexistent/terminal-bench").task_ids()
 
 
 def test_fake_example_adapter_round_trip():
