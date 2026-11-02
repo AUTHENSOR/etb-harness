@@ -56,6 +56,8 @@ uv run etbh probe --benchmark swe_bench --n 50 --seed 20261101 --arch auto --pro
 uv run etbh probe --benchmark swe_bench --n 50 --seed 20261101 --arch auto --profile after --prune
 uv run etbh probe --benchmark swe_bench --task-ids sympy__sympy-15976 --profile before   # one task
 # --dataset-revision <hf commit> overrides the adapter's pin; --arch auto|arm64|x86_64
+# --profile before after  runs both profiles per task (one image pull); --resume continues
+# the latest unfinished run with the same plan under --out (run.json is checkpointed per task)
 uv run etbh summarize results/
 ```
 
@@ -70,6 +72,22 @@ x86_64 (arm64 availability UNVERIFIED), so on this Mac they run under emulation.
 run with `--prune` so each task image is removed after its probes, keep `n` small until the
 per-image cost is known, and move idle run data and image caches to the USB drives rather
 than leaving them on the internal disk.
+
+### Pulls that never return
+
+On this machine `~/.docker/config.json` uses `credsStore: desktop`, and `docker-credential-desktop`
+can hang (a keychain prompt nobody answers). When it does, every `docker pull` and `docker
+manifest inspect`, from the CLI or the Python SDK, blocks with no output. Run the harness with an
+empty Docker config so pulls are anonymous and the helper is never consulted:
+
+```bash
+mkdir -p ~/.config/etbh/docker && echo '{}' > ~/.config/etbh/docker/config.json
+export DOCKER_CONFIG=~/.config/etbh/docker
+.venv/bin/python runs/pull_images.py --benchmark terminal_bench --n 5 --seed 20261101
+```
+
+`runs/pull_images.py` adds per-attempt timeouts and retries. Docker Hub allows 100 anonymous
+pulls per hour per IP, which is more than a run needs.
 
 ## Rules
 
